@@ -1,6 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const { authenticateToken } = require('./auth');
+
+// Protect all routes under /transactions with authentication
+router.use(authenticateToken);
+
 
 // Add a new transaction
 router.post('/', (req, res) => {
@@ -57,5 +62,75 @@ router.delete('/:id', (req, res) => {
         res.json({ message: 'Transaction deleted' });
     });
 });
+
+// Add a new transaction
+router.post('/', (req, res) => {
+    const { type, category, amount, date, description } = req.body;
+    const userId = req.user.userId;  // Add userId from the JWT token
+
+    const query = `INSERT INTO transactions (type, category, amount, date, description, user_id) VALUES (?, ?, ?, ?, ?, ?)`;
+    db.run(query, [type, category, amount, date, description, userId], function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ id: this.lastID });
+    });
+});
+
+// Get all transactions for the authenticated user
+router.get('/', (req, res) => {
+    const userId = req.user.userId;
+
+    const query = `SELECT * FROM transactions WHERE user_id = ?`;
+    db.all(query, [userId], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+// Get a summary of transactions
+router.get('/summary', (req, res) => {
+    const userId = req.user.userId;
+    const { startDate, endDate, category } = req.query;
+
+    let query = `SELECT 
+                    SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) AS total_income,
+                    SUM(CASE WHEN type = 'expense' THEN amount ELSE 0 END) AS total_expenses
+                 FROM transactions WHERE user_id = ?`;
+    const params = [userId];
+
+    if (startDate && endDate) {
+        query += ` AND date BETWEEN ? AND ?`;
+        params.push(startDate, endDate);
+    }
+
+    if (category) {
+        query += ` AND category = ?`;
+        params.push(category);
+    }
+
+    db.get(query, params, (err, summary) => {
+        if (err) return res.status(500).json({ error: err.message });
+        const balance = summary.total_income - summary.total_expenses;
+        res.json({ ...summary, balance });
+    });
+});
+
+router.get('/reports/monthly', (req, res) => {
+    const userId = req.user.userId;
+    const { month, year } = req.query;
+
+    const query = `
+        SELECT categories.name, SUM(transactions.amount) AS total
+        FROM transactions
+        INNER JOIN categories ON transactions.category = categories.id
+        WHERE transactions.user_id = ? AND strftime('%m', transactions.date) = ? AND strftime('%Y', transactions.date) = ?
+        GROUP BY transactions.category;
+    `;
+    db.all(query, [userId, month, year], (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+
 
 module.exports = router;
